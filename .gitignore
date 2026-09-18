@@ -1,0 +1,23 @@
+# Project-specific
+/cluster
+/cluster_utils
+/old_results/
+/tuning_results/
+results.tar.zst
+pyproject.toml
+
+# Environment
+.venv
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/

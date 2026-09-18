@@ -1,0 +1,8 @@
+pymoo
+numpy
+pandas
+matplotlib
+plotly
+numba
+pyarrow
+fastparquet

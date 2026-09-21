@@ -226,7 +226,8 @@ def rtea_sweep(seed: int, problem: str, std: float, noise_type: str, archive_res
         problem=problem_instance,
         algorithm=algo_instance,
         callback = callback_instance,
-        termination=("n_eval", 200000)
+        termination=("n_eval", 200000),
+        seed = seed # Seeds the algorithms own random state, np.random.seed above only covers the noise
     )
 
     # Save data to pickle files

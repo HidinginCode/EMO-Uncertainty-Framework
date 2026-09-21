@@ -16,14 +16,35 @@ import numpy as np
 # Pymoo imports
 from pymoo.core.algorithm import Algorithm
 from pymoo.core.population import Population
+from pymoo.core.individual import Individual
 from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting as NDS
 from pymoo.util.dominator import Dominator
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.gauss import GaussianMutation
+from pymoo.operators.repair.bounds_repair import repair_random_init
+from pymoo.core.variable import get
 
 # Python imports
 import typing
-import copy
+
+class SeededGaussianMutation(GaussianMutation):
+    """GaussianMutation whose out of bounds repair uses the supplied random state.
+
+    Pymoos version calls its repair without a random state, so that part draws from an unseeded generator and makes runs irreproducible."""
+
+    def _do(self, problem, X, random_state = None, **kwargs):
+        X = X.astype(float)
+
+        sigma = get(self.sigma, size = len(X))
+        prob_var = self.get_prob_var(problem, size = len(X))
+
+        # Same procedure as pymoos mut_gauss, every chosen variable gets additive noise with a width relative to its range
+        mut = random_state.random(X.shape) < prob_var[:, None]
+        width = sigma[:, None] * (problem.xu - problem.xl)[None, :]
+        Xp = X.copy()
+        Xp[mut] = random_state.normal(X[mut], width[mut])
+
+        return repair_random_init(Xp, X, problem.xl, problem.xu, random_state = random_state)
 
 # Main thing for this implementation is that this algortihm does not fit existing patterns.
 # Consequently I will build all the steps myself using pymoo but maybe sidestepping some mechanisms.
@@ -57,6 +78,9 @@ class RTEA(LoggingMixin, Algorithm):
         # Create archive
         self._archive: Population = Population()
 
+        # Reverse lookup from a dominator to the pop members that currently track it, saves scanning the whole pop on every resample
+        self._dependents: dict[Individual, list[Individual]] = {}
+
         self.logger.info(f"Instance of {self.__class__.__name__} has been created.")
         self.logger.debug(f"Pop size: {self.pop_size}\nCrossover probabilitiy: {self._cross_prob}\nArchive resamples: {self._archive_resamples}\nArchive refinement: {self._archive_refinement}")
 
@@ -87,11 +111,11 @@ class RTEA(LoggingMixin, Algorithm):
         if self.random_state.random() < self._cross_prob:
             # eta = 20, prob = 1.0 and n_offsprings = 1 match Fieldsend's reference implementation
             new_ind = SBX(eta = 20, prob = 1.0, n_offsprings = 1).do(problem = self.problem, pop = self._archive, parents = chosen_indices.reshape(1, -1), random_state = self.random_state)
-        else: # If we do not create a new child we copy the parent and mutate it
-            new_ind = copy.deepcopy(self._archive[[chosen_indices[0]]])
+        else: # If we do not create a new child we copy the parent's decision variables into a fresh individual (a deepcopy would keep the parent's evaluated flag and pymoo would skip evaluating it) and mutate it
+            new_ind = Population.new("X", self._archive[[chosen_indices[0]]].get("X"))
 
         # Mutate the new_ind
-        new_ind = GaussianMutation(sigma = 0.2).do(problem = self.problem, pop = new_ind, random_state = self.random_state)
+        new_ind = SeededGaussianMutation(sigma = 0.2).do(problem = self.problem, pop = new_ind, random_state = self.random_state)
 
         return new_ind
 
@@ -114,11 +138,12 @@ class RTEA(LoggingMixin, Algorithm):
 
         return super()._advance(infills, **kwargs)
 
-    def _update_front(self, individual):
+    def _update_front(self, individual, in_pop: bool = False):
         """Method that checks an individual against the current archive and places it in the archive or the search population.
 
         Args:
-            individual (Individual): Individual to check against the archive."""
+            individual (Individual): Individual to check against the archive.
+            in_pop (bool, optional): Whether the individual already is part of the search population (recheck of a tracked member). Defaults to False."""
 
         # If individual is not domianted by any archive member it is added
         # All archive members that are dominated get returned to pop with the individual as their tracked dominator
@@ -131,19 +156,32 @@ class RTEA(LoggingMixin, Algorithm):
 
             match dom_realation:
                 case 1: # Archive member dominates individual
-                    individual.set("dominator", a_member)
-                    self.pop = Population.merge(a = self.pop, b = individual)
+                    self._set_dominator(individual, a_member)
+                    if not in_pop:
+                        self.pop = Population.merge(a = self.pop, b = individual)
                     break
                 case -1: # Individual dominates archive member
-                    a_member.set("dominator", individual)
+                    self._set_dominator(a_member, individual)
                     removed_archive_indices.append(i)
         else: # Loop completed without breaking, so individual was not dominated by the archive
+            if in_pop: # Promoted out of the search population
+                self.pop = self.pop[np.array([p_member is not individual for p_member in self.pop], dtype = bool)]  # pyright: ignore[reportAttributeAccessIssue]
             self._archive = Population.merge(a = self._archive, b = individual)
 
         # Take archive member indices and transfer them to pop
         transfer_pop = self._archive[removed_archive_indices]
         self.pop = Population.merge(a = self.pop, b = transfer_pop)
         self._archive = self._archive[np.setdiff1d(np.arange(len(self._archive)), removed_archive_indices)]  # pyright: ignore[reportAttributeAccessIssue]
+
+    def _set_dominator(self, individual, dominator):
+        """Method that records the tracked dominator of an individual, both on the individual itself and in the reverse lookup.
+
+        Args:
+            individual (Individual): Individual that is dominated.
+            dominator (Individual): Individual that dominates it."""
+
+        individual.set("dominator", dominator)
+        self._dependents.setdefault(dominator, []).append(individual)
 
     def _resample_archive(self):
         """Method that reevaluates the archive members with the fewest samples to refine their objective estimates."""
@@ -157,9 +195,7 @@ class RTEA(LoggingMixin, Algorithm):
 
             assert self.pop is not None, f"Population was None while trying to resample the archive."
             # Pop members currently tracking chosen as their dominator need to be rechecked once its estimate changes
-            tracking_mask = np.array([p_member.get("dominator") is chosen for p_member in self.pop], dtype = bool)
-            rechecked = self.pop[tracking_mask]
-            self.pop = self.pop[~tracking_mask]  # pyright: ignore[reportAttributeAccessIssue]
+            rechecked = self._dependents.pop(chosen, [])
 
             # Remove chosen from the archive while its estimate is refined
             self._archive = self._archive[np.setdiff1d(np.arange(len(self._archive)), [chosen_index])]  # pyright: ignore[reportAttributeAccessIssue]
@@ -175,7 +211,7 @@ class RTEA(LoggingMixin, Algorithm):
             self._update_front(chosen)
 
             for p_member in rechecked:
-                self._update_front(p_member)
+                self._update_front(p_member, in_pop = True)
 
     def _in_search_phase(self) -> bool:
         """Method that checks whether the run is still in its search phase, as opposed to the pure archive refinement phase."""
@@ -185,6 +221,10 @@ class RTEA(LoggingMixin, Algorithm):
         assert hasattr(self.termination, "n_max_evals"), f"Termination had no attribute n_max_evals"
 
         return self.evaluator.n_eval < (1 - self._archive_refinement) * self.termination.n_max_evals  # pyright: ignore[reportAttributeAccessIssue]
+
+    def _set_optimum(self) -> None:
+        # The archive is the estimated Pareto set, pymoos default would rescan the entire (ever growing) pop after every iteration
+        self.opt = self._archive
 
     def _populate_archive(self, population: Population = None):
         """Method that populates the archive using a given population.
@@ -214,5 +254,5 @@ class RTEA(LoggingMixin, Algorithm):
         for p_member in self.pop:
             for a_member in self._archive:
                 if Dominator().get_relation(a = a_member.F , b = p_member.F) == 1: # a_member dominates p_member
-                    p_member.set("dominator", a_member)
+                    self._set_dominator(p_member, a_member)
                     break

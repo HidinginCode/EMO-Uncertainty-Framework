@@ -5,6 +5,8 @@
 /tuning_results/
 results.tar.zst
 pyproject.toml
+/pyhton_logs/
+/data/
 
 # Environment
 .venv

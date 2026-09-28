@@ -145,33 +145,48 @@ class RTEA(LoggingMixin, Algorithm):
             individual (Individual): Individual to check against the archive.
             in_pop (bool, optional): Whether the individual already is part of the search population (recheck of a tracked member). Defaults to False."""
 
+        # Safety Checks
+        assert self.pop is not None, f"Tried to update front but self.pop was None."
+
         # If individual is not domianted by any archive member it is added
         # All archive members that are dominated get returned to pop with the individual as their tracked dominator
         # If it is dominated by the archive then one archive member is chosen to be its domiantor and it is added to the search population
 
-        removed_archive_indices = []
-        # Dominance check against archive
-        for i, a_member in enumerate(self._archive):
-            dom_realation = Dominator().get_relation(a = a_member.F , b = individual.F)
+        # A demoted archive member's own dependents must be rechecked too (they're no longer validly guarded),
+        # which can cascade into further demotions; a worklist avoids unbounded recursion for long cascades.
+        to_process = [(individual, in_pop)]
 
-            match dom_realation:
-                case 1: # Archive member dominates individual
-                    self._set_dominator(individual, a_member)
-                    if not in_pop:
-                        self.pop = Population.merge(a = self.pop, b = individual)
-                    break
-                case -1: # Individual dominates archive member
-                    self._set_dominator(a_member, individual)
-                    removed_archive_indices.append(i)
-        else: # Loop completed without breaking, so individual was not dominated by the archive
-            if in_pop: # Promoted out of the search population
-                self.pop = self.pop[np.array([p_member is not individual for p_member in self.pop], dtype = bool)]  # pyright: ignore[reportAttributeAccessIssue]
-            self._archive = Population.merge(a = self._archive, b = individual)
+        while to_process:
+            individual, in_pop = to_process.pop()
 
-        # Take archive member indices and transfer them to pop
-        transfer_pop = self._archive[removed_archive_indices]
-        self.pop = Population.merge(a = self.pop, b = transfer_pop)
-        self._archive = self._archive[np.setdiff1d(np.arange(len(self._archive)), removed_archive_indices)]  # pyright: ignore[reportAttributeAccessIssue]
+            removed_archive_indices = []
+            # Dominance check against archive
+            for i, a_member in enumerate(self._archive):
+                dom_realation = Dominator().get_relation(a = a_member.F , b = individual.F)
+
+                match dom_realation:
+                    case 1: # Archive member dominates individual
+                        self._set_dominator(individual, a_member)
+                        if not in_pop:
+                            self.pop = Population.merge(a = self.pop, b = individual)
+                        break
+                    case -1: # Individual dominates archive member
+                        self._set_dominator(a_member, individual)
+                        removed_archive_indices.append(i)
+            else: # Loop completed without breaking, so individual was not dominated by the archive
+                if in_pop: # Promoted out of the search population
+                    self.pop = self.pop[np.array([p_member is not individual for p_member in self.pop], dtype = bool)]  # pyright: ignore[reportAttributeAccessIssue]
+                self._archive = Population.merge(a = self._archive, b = individual)
+
+            # Demoted members leave the archive here, so their tracked dependents (if any) need to be
+            # queued for a recheck against the updated archive instead of being left stale in _dependents.
+            for i in removed_archive_indices:
+                to_process.extend((dependent, True) for dependent in self._dependents.pop(self._archive[i], []))
+
+            # Take archive member indices and transfer them to pop
+            transfer_pop = self._archive[removed_archive_indices]
+            self.pop = Population.merge(a = self.pop, b = transfer_pop)
+            self._archive = self._archive[np.setdiff1d(np.arange(len(self._archive)), removed_archive_indices)]  # pyright: ignore[reportAttributeAccessIssue]
 
     def _set_dominator(self, individual, dominator):
         """Method that records the tracked dominator of an individual, both on the individual itself and in the reverse lookup.

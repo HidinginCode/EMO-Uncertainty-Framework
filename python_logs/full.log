@@ -1,0 +1,12 @@
+[2026-09-28 09:33:27,603][INFO][RTEA]: Instance of RTEA has been created.
+[2026-09-28 09:33:27,603][INFO][NZDT1]: Instance of NZDT1 with noise of type gaussian and std 0.6 created.
+[2026-09-28 09:33:27,603][INFO][RTEA_Callback]: Instance of RTEA_Callback created.
+[2026-09-28 09:34:09,798][INFO][RTEA]: Instance of RTEA has been created.
+[2026-09-28 09:34:09,798][INFO][NZDT1]: Instance of NZDT1 with noise of type gaussian and std 0.6 created.
+[2026-09-28 09:34:09,798][INFO][RTEA_Callback]: Instance of RTEA_Callback created.
+[2026-09-28 09:34:44,087][INFO][RTEA]: Instance of RTEA has been created.
+[2026-09-28 09:34:44,087][INFO][NZDT1]: Instance of NZDT1 with noise of type gaussian and std 1.5 created.
+[2026-09-28 09:40:38,771][INFO][RTEA]: Instance of RTEA has been created.
+[2026-09-28 09:40:38,771][INFO][NZDT1]: Instance of NZDT1 with noise of type gaussian and std 1.5 created.
+[2026-09-28 09:46:53,341][INFO][RTEA]: Instance of RTEA has been created.
+[2026-09-28 09:46:53,341][INFO][NZDT1]: Instance of NZDT1 with noise of type gaussian and std 1.5 created.
